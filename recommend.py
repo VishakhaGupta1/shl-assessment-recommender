@@ -1,30 +1,53 @@
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer, util
+import torch
 
-# Load scraped assessments
-df = pd.read_csv("shl_assessments.csv")
+# Load the Sentence-BERT model
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# Create a new column for combining useful text fields
-df["text_blob"] = df["Assessment Name"] + " " + df["Test Type"].fillna("") + " " + df["Duration"].fillna("")
+def load_data():
+    df = pd.read_csv('shl_assessments.csv')
+    df.columns = df.columns.str.strip()  # Clean column names
 
-# TF-IDF vectorizer for matching queries
-vectorizer = TfidfVectorizer()
-tfidf_matrix = vectorizer.fit_transform(df["text_blob"])
+    # ✅ Replace 'Description' with 'Test Type' since that's available
+    df['combined_text'] = df['Assessment Name'] + " " + df['Test Type']
+    return df
 
-def recommend_assessments(query, top_n=10):
-    query_vec = vectorizer.transform([query])
-    similarity_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
-    
-    top_indices = similarity_scores.argsort()[::-1][:top_n]
-    results = df.loc[top_indices].copy()
-    results["Score"] = similarity_scores[top_indices].round(2)
+# Load and encode data
+df = load_data()
+corpus = df['combined_text'].tolist()
+corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
 
-    return results[[
-        "Assessment Name", "URL", "Remote Testing Support",
-        "Adaptive/IRT Support", "Duration", "Test Type", "Score"
-    ]]
+def get_recommendations(user_input, top_k=10):
+    query_embedding = model.encode(user_input, convert_to_tensor=True)
+    cosine_scores = util.pytorch_cos_sim(query_embedding, corpus_embeddings)[0]
+    top_results = torch.topk(cosine_scores, k=top_k)
+
+    results = []
+    for score, idx in zip(top_results[0], top_results[1]):
+        row = df.iloc[idx.item()]
+        results.append({
+            'Assessment Name': row['Assessment Name'],
+            'URL': row['URL'],
+            'Remote Testing Support': row['Remote Testing Support'],
+            'IRT Support': row['Adaptive/IRT Support'],
+            'Duration': row['Duration'],
+            'Type': row['Test Type'],
+            'Score': float(score)
+        })
+
+    return results
+
 if __name__ == "__main__":
-    query = "Looking for Python and SQL test under 60 mins"
-    recommendations = recommend_assessments(query)
-    print(recommendations)
+    query = "Hiring a frontend developer who knows React and has good problem-solving skills. Test should be under 45 minutes."
+    recommendations = get_recommendations(query)
+
+    for i, rec in enumerate(recommendations):
+        print(f"\n🔹 Recommendation {i+1}")
+        print(f"Name: {rec['Assessment Name']}")
+        print(f"URL: {rec['URL']}")
+        print(f"Remote Testing Support: {rec['Remote Testing Support']}")
+        print(f"IRT Support: {rec['IRT Support']}")
+        print(f"Duration: {rec['Duration']}")
+        print(f"Type: {rec['Type']}")
+        print(f"Score: {rec['Score']:.4f}")
